@@ -1,0 +1,108 @@
+---
+title: "Predicting Manner of Barbell Lifts using Machine Learning"
+subtitle: "Course Project for Practical Machine Learning"
+author: "Ariel"
+date: "Saturday, May 23, 2015"
+output: html_document
+---
+## Introduction
+
+Thanks to the modern development of wearable accelerometers, people are able to collect a large amount of data about their personal activity in a convenient and relatively inexpensive way. Typically, these light and portable devices are used in quantifying self movement and are thus helpful in improving personal health. As a premise, wearable accelerometers are expected to recognize a particular type of activity based on the measurement of several variables. 
+
+My goal for this project is to predict the manner in which the participants did the exercise as classified in the `classe` variable in the [training set](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv). Data are collected from accelerometers on the belt, forearm, arm, and dumbell of 6 participants, who were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+To make predictions as accurate as possible, I first cleaned the training set by excluding irrelevant columns and chose K-fold as my cross validation in building my models. Then I built random forest models using `classe` as the outcome and the other remaining variables as predictors. The estimate my out of sample error to be `0.4 %`. Finally, I predicted `classe` in the [testing set](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv).
+
+The source of the data is <http://groupware.les.inf.puc-rio.br/har>. 
+
+## Data Processing
+### Load data and necessary R packages:
+```{r Load_Data_and_Packages, warning = FALSE, message = FALSE}
+# Download training/testing data set if it is not found in the working directory:
+if (!file.exists("pml-training.csv")) {
+        download.file(url = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", 
+                      destfile = "~/pml-training.csv")
+}
+if (!file.exists("pml-testing.csv")) {
+        download.file(url = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", 
+                      destfile = "~/pml-testing.csv")
+}
+# Load training and testing sets:
+training <- read.csv("pml-training.csv", na.strings = c("", "NA", "DIV/0!"))
+testing <- read.csv("pml-testing.csv", na.strings = c("", "NA", "DIV/0!"))
+# Load required packages:
+library(randomForest)
+library(caret)
+```
+
+### Clean data by excluding variables irrelevant to classe variable:
+I marked all missing values and removed them with their columns. This approach reduced the number of variable from `160` to `53` including `classe`. Then I stored the cleaned training set in `cleanTrain`.
+```{r Data_Cleaning}
+dim(training)
+## [1] 19622   160
+compCol <- c()
+for (i in 1:160) compCol <- c(compCol, sum(complete.cases(training[,i])))
+unique(compCol) # There are only two different levels in compCol. Since the total number of observations is 19,622 observations in the training set, columns with 19,622 non-missing values are columns that have no missing values.
+nrow(training[training$new_window == "yes",]) # There are only 406 complete observations, which is a sample too small for building good models. It would be more helpful to only include columns with no missing values:
+compTrain <- training[grepl("19622", compCol)]
+dim(compTrain) # The number of variables in use is smaller, but all observations are complete for these remaining variables.
+# Transform the classe variable into a factor:
+compTrain$classe <- as.factor(compTrain$classe)
+# Exclude columns 1 to 7 that contain data irrelevant to classe:
+cleanTrain <- compTrain[,8:60]
+```
+
+### Build random forest models using K-fold as a cross validation:
+I chose random forest to be my major model because of its high accuracy and the `randomForest` package because of its fast spped. However, a disvantage of random forest is overfitting. To avoid overfitting, I cross-validated my model using K-fold.
+
+Using K-fold as my cross validation, I randomly split observations in `cleanTrain` into five folds. I want each training set to have an adequate amount of data, so I did not split data into more folds (higher `k`). Each fold, or sub-testing set, is approximately a fifth of `cleanTrain` and contains a balanced mixture of different `classe`.
+
+For each sub-testing set, its corresponding sub-training set is the collection of the other four sub-testing sets. This is the basic idea of K-fold. I then built a random forest model on each sub-training set and stored all models in a list named `rfModels`.
+```{r Random_Forest_Models_and_K-fold_Cross_Validation, cache = TRUE}
+# Slice cleanTrain into five sub-testing sets:
+set.seed(524)
+foldLabel <- createFolds(y = cleanTrain$classe, k = 5, list = FALSE) # For each sub-testing set, there is a sub-training set consisting of the other four sub-testing set.
+# Build a random forest model on each sub-training set:
+rfModels <- list(); kFolds <- list()
+cleanTrain2 <- cleanTrain
+for (i in 1:5) {
+        kFolds[[i]] <- grep(as.character(i), foldLabel)
+        rfModels[[i]] <- randomForest(classe ~ ., data = cleanTrain2[-kFolds[[i]],])
+        cleanTrain2 <- cleanTrain
+}
+rfModels
+```
+
+### Predict on each sub-testing set and calculate out of sample errors:
+To estimate out of sample error for each random forest model stored in `rfModels`, I predicted `classe` using each of these models. Then I calculated the proportion of correct predictions of correct predictions for each model and average them. I expected to get an out of sample error smaller than `0.02` for at least one of these models.
+```{r Out_of_Sample_Error}
+# Predict classe using each of the five random forest models and evaluate predictions on each sub-testing set:
+outErr <- numeric()
+for (i in 1:5) {
+        pred <- predict(rfModels[[i]], newdata = cleanTrain2[kFolds[[i]],])
+        predRight <- pred == cleanTrain2$classe[kFolds[[i]]]
+        outErr[i] <- 1 - sum(predRight) / length(kFolds[[i]])
+}
+outErr # estimated out of sample errors
+mean(outErr) # averaged error
+sd(outErr) # mean squared error
+```
+While the OOB estimates of error rates are very low, the estimated out of sample errors are also fairly low (below `1 %`), which suggests no clear evidence of overfitting. The averaged out of sample error is `r signif(mean(outErr), 4)`, which is approximately `0.4 %`. And a very small mean squared error `r signif(sd(outErr), 4)` suggests that these models are looking good.
+
+### Predict on the testing set using different models and compare results:
+I used my models to predict on the testing set. In fact, all five of them gave the same predictions of `classe` as shown in the combined data frame `ansDf` below.
+```{r Predict_in_Testing_Set}
+# Predict classe in the training set using each of the five models in rfModels:
+ansDf <- data.frame()
+for (i in 1:5) {
+        answers <- predict(rfModels[[i]], testing)
+        ansDf <- rbind(ansDf, as.character(answers))
+}
+colnames(ansDf) <- 1:20
+# Compare answers predicted by all five random forest models:
+ansDf
+```
+If I have to choose a random forest model out of the five, I would choose the first one `rfModel[[1]]` because it has the smallest out of sample error `r signif(outErr[1], 4)`.
+
+## Conclusion:
+To predict `classe` in the testing set, I built five random forest models on the training set using `classe` as the outcome and the other remaining variables as predictors. K-fold cross validation shows no clear sign of overfitting. All five models have small out of sample errors, with an average of `r signif(mean(outErr), 4)` and they give the same predictions on the testing set. In particular, the first model stored in the list`rfModels` has the smallest estimated out of sample error, which is `r signif(outErr[1], 4)` and is thus considered the best model out of the five.
